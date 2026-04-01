@@ -27,24 +27,45 @@ def generate_slots():
     return slots
 
 
+# Filter past slots (only for today)
+def filter_future_slots(slots, selected_date):
+    today_str = datetime.now().strftime("%Y-%m-%d")
+
+    if selected_date != today_str:
+        return slots
+
+    current_hour = datetime.now().hour
+    filtered = []
+
+    for slot in slots:
+        start_time = slot.split("-")[0].strip()
+        hour = int(start_time.split()[0])
+        period = start_time.split()[1]
+
+        if period == "PM" and hour != 12:
+            hour += 12
+        if period == "AM" and hour == 12:
+            hour = 0
+
+        if hour > current_hour:
+            filtered.append(slot)
+
+    return filtered
+
+
 # Invalid handler
 def handle_invalid(temp_ref, temp_data, msg):
     attempts = temp_data.get("invalid_attempts", 0) + 1
 
     if attempts >= 3:
         temp_ref.delete()
-        msg.body(
-            "❌ Too many invalid attempts.\n\n"
-            "Restarting...\n\nSend 'Hi' to begin."
-        )
+        msg.body("❌ Too many invalid attempts.\n\nRestarting...\n\nSend 'Hi' to begin.")
         return
 
     temp_ref.update({"invalid_attempts": attempts})
     msg.body(
         f"⚠️ Invalid choice ({attempts}/3)\n"
-        "Try again.\n\n"
-        "Type B → Back\n"
-        "Type 0 → Exit"
+        "Try again.\n\nType B → Back\nType 0 → Exit"
     )
 
 
@@ -55,6 +76,7 @@ def main_menu():
         "1. Book for today\n"
         "2. Book for another date\n"
         "3. Cancel booking\n"
+        "4. Give feedback\n"
         "0. Exit"
     )
 
@@ -173,6 +195,25 @@ def whatsapp_reply():
         )
         return str(resp)
 
+    # FEEDBACK FLOW
+    if temp_data.get("step") == "feedback":
+        feedback_text = incoming_msg
+
+        db.reference("feedback").push({
+            "user": user_phone,
+            "message": feedback_text,
+            "timestamp": datetime.now().isoformat()
+        })
+
+        temp_ref.delete()
+
+        msg.body(
+            "✅ Thank you for your feedback!\n\n"
+            "Our team will contact you soon.\n\n"
+            + main_menu()
+        )
+        return str(resp)
+
     # ENTER DATE
     if temp_data.get("step") == "enter_date":
         selected_date = incoming_msg
@@ -185,6 +226,7 @@ def whatsapp_reply():
             ref.set(data)
 
         available = sorted([s for s, i in data.items() if i["status"] == "available"])
+        available = filter_future_slots(available, selected_date)
 
         if not available:
             temp_ref.delete()
@@ -210,7 +252,7 @@ def whatsapp_reply():
         return str(resp)
 
     # =====================
-    # MENU (ONLY IF NO STATE)
+    # MENU
     # =====================
 
     if incoming_msg.lower() in ["hi", "hello"]:
@@ -226,6 +268,7 @@ def whatsapp_reply():
             ref.set(data)
 
         available = sorted([s for s, i in data.items() if i["status"] == "available"])
+        available = filter_future_slots(available, today)
 
         if not available:
             temp_ref.delete()
@@ -286,7 +329,12 @@ def whatsapp_reply():
         msg.body(reply)
         return str(resp)
 
-    # FINAL SAFETY NET (never silent)
+    if incoming_msg == "4":
+        temp_ref.set({"step": "feedback"})
+        msg.body("Please type your feedback:\nType B → Back\nType 0 → Exit")
+        return str(resp)
+
+    # FALLBACK
     temp_ref.delete()
     msg.body(
         "⚠️ I didn’t understand that.\n\n"
