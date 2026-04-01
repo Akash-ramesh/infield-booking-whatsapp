@@ -37,7 +37,7 @@ def handle_invalid(temp_ref, temp_data, msg):
             "❌ Too many invalid attempts.\n\n"
             "Restarting...\n\nSend 'Hi' to begin."
         )
-        return True
+        return
 
     temp_ref.update({"invalid_attempts": attempts})
     msg.body(
@@ -46,7 +46,6 @@ def handle_invalid(temp_ref, temp_data, msg):
         "Type B → Back\n"
         "Type 0 → Exit"
     )
-    return True
 
 
 # Main menu
@@ -73,36 +72,34 @@ def whatsapp_reply():
     temp_ref = db.reference(f"temp/{user_phone}")
     temp_data = temp_ref.get() or {}
 
-    # =====================
     # EXIT
-    # =====================
     if incoming_msg == "0":
         temp_ref.delete()
         msg.body("✅ Session ended. Send 'Hi' to start again.")
         return str(resp)
 
-    # =====================
     # BACK
-    # =====================
     if incoming_msg.lower() == "b":
         temp_ref.delete()
         msg.body(main_menu())
         return str(resp)
 
     # =====================
-    # 🔥 STEP-BASED HANDLING FIRST (P1 FIX)
+    # STEP-BASED HANDLING FIRST
     # =====================
 
     # SELECT SLOT
     if temp_data.get("step") == "select_slot":
         if not incoming_msg.isdigit():
-            return str(resp) if handle_invalid(temp_ref, temp_data, msg) else None
+            handle_invalid(temp_ref, temp_data, msg)
+            return str(resp)
 
         index = int(incoming_msg) - 1
         slots = temp_data["slots"]
 
         if index >= len(slots):
-            return str(resp) if handle_invalid(temp_ref, temp_data, msg) else None
+            handle_invalid(temp_ref, temp_data, msg)
+            return str(resp)
 
         selected_slot = slots[index]
 
@@ -150,13 +147,15 @@ def whatsapp_reply():
     # CANCEL FLOW
     if temp_data.get("step") == "cancel":
         if not incoming_msg.isdigit():
-            return str(resp) if handle_invalid(temp_ref, temp_data, msg) else None
+            handle_invalid(temp_ref, temp_data, msg)
+            return str(resp)
 
         index = int(incoming_msg) - 1
         bookings = temp_data["bookings"]
 
         if index >= len(bookings):
-            return str(resp) if handle_invalid(temp_ref, temp_data, msg) else None
+            handle_invalid(temp_ref, temp_data, msg)
+            return str(resp)
 
         date, slot = bookings[index]
 
@@ -174,7 +173,7 @@ def whatsapp_reply():
         )
         return str(resp)
 
-    # ENTER DATE FLOW
+    # ENTER DATE
     if temp_data.get("step") == "enter_date":
         selected_date = incoming_msg
 
@@ -211,7 +210,7 @@ def whatsapp_reply():
         return str(resp)
 
     # =====================
-    # MENU (only if no active step)
+    # MENU (ONLY IF NO STATE)
     # =====================
 
     if incoming_msg.lower() in ["hi", "hello"]:
@@ -287,7 +286,12 @@ def whatsapp_reply():
         msg.body(reply)
         return str(resp)
 
-    msg.body("Send 'Hi' to start\nType 0 → Exit")
+    # FINAL SAFETY NET (never silent)
+    temp_ref.delete()
+    msg.body(
+        "⚠️ I didn’t understand that.\n\n"
+        "Returning to main menu...\n\n" + main_menu()
+    )
     return str(resp)
 
 
