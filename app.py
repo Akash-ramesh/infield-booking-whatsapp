@@ -17,6 +17,7 @@ firebase_admin.initialize_app(cred, {
 })
 
 
+# Generate slots (sorted automatically by time)
 def generate_slots():
     slots = {}
     for hour in range(6, 24):
@@ -24,6 +25,25 @@ def generate_slots():
         end = f"{(hour+1) % 12 or 12} {'AM' if hour+1 < 12 else 'PM'}"
         slots[f"{start}-{end}"] = {"status": "available"}
     return slots
+
+
+# Handle invalid attempts
+def handle_invalid(temp_ref, temp_data, msg):
+    attempts = temp_data.get("invalid_attempts", 0) + 1
+
+    if attempts >= 3:
+        temp_ref.delete()
+        msg.body("❌ Too many invalid attempts.\n\nRestarting...\nSend 'Hi' to begin.")
+        return True
+
+    temp_ref.update({"invalid_attempts": attempts})
+    msg.body(
+        f"⚠️ Invalid choice ({attempts}/3)\n"
+        "Please try again.\n\n"
+        "Type B → Back\n"
+        "Type 0 → Exit"
+    )
+    return True
 
 
 @app.route("/whatsapp", methods=['POST'])
@@ -35,21 +55,18 @@ def whatsapp_reply():
     msg = resp.message()
 
     today = datetime.now().strftime("%Y-%m-%d")
-    temp_ref = db.reference(f"temp/{user_phone}")
-    temp_data = temp_ref.get()
 
-    # =====================
+    temp_ref = db.reference(f"temp/{user_phone}")
+    temp_data = temp_ref.get() or {}
+
     # EXIT
-    # =====================
     if incoming_msg == "0":
         temp_ref.delete()
         msg.body("✅ Session ended. Send 'Hi' to start again.")
         return str(resp)
 
-    # =====================
-    # BACK TO MENU
-    # =====================
-    if incoming_msg == "9":
+    # BACK
+    if incoming_msg.lower() == "b":
         temp_ref.delete()
         msg.body(
             "Main Menu:\n"
@@ -60,9 +77,7 @@ def whatsapp_reply():
         )
         return str(resp)
 
-    # =====================
     # START
-    # =====================
     if incoming_msg.lower() in ["hi", "hello"]:
         msg.body(
             "Welcome to Infield Turf ⚽\n\n"
@@ -74,7 +89,7 @@ def whatsapp_reply():
         return str(resp)
 
     # =====================
-    # TODAY
+    # OPTION 1: TODAY
     # =====================
     if incoming_msg == "1":
         ref = db.reference(f"slots/{today}")
@@ -86,6 +101,10 @@ def whatsapp_reply():
 
         available = [s for s, i in data.items() if i["status"] == "available"]
 
+        if not available:
+            msg.body("❌ No slots available today\nType B → Back")
+            return str(resp)
+
         temp_ref.set({
             "step": "select_slot",
             "slots": available,
@@ -96,20 +115,22 @@ def whatsapp_reply():
         for i, slot in enumerate(available, 1):
             reply += f"{i}. {slot}\n"
 
-        reply += "\nReply with slot number\n9. Back"
+        reply += "\nReply with slot number"
+        reply += "\nType B → Back"
+        reply += "\nType 0 → Exit"
 
         msg.body(reply)
         return str(resp)
 
     # =====================
-    # OTHER DATE
+    # OPTION 2: OTHER DATE
     # =====================
     if incoming_msg == "2":
         temp_ref.set({"step": "enter_date"})
-        msg.body("Enter date (YYYY-MM-DD)\n9. Back")
+        msg.body("Enter date (YYYY-MM-DD)\nType B → Back\nType 0 → Exit")
         return str(resp)
 
-    if temp_data and temp_data.get("step") == "enter_date":
+    if temp_data.get("step") == "enter_date":
         selected_date = incoming_msg
 
         ref = db.reference(f"slots/{selected_date}")
@@ -131,21 +152,25 @@ def whatsapp_reply():
         for i, slot in enumerate(available, 1):
             reply += f"{i}. {slot}\n"
 
-        reply += "\nReply with slot number\n9. Back"
+        reply += "\nReply with slot number"
+        reply += "\nType B → Back"
+        reply += "\nType 0 → Exit"
 
         msg.body(reply)
         return str(resp)
 
     # =====================
-    # SLOT SELECTED → ASK NAME
+    # SLOT SELECT → ASK NAME
     # =====================
-    if temp_data and temp_data.get("step") == "select_slot" and incoming_msg.isdigit():
+    if temp_data.get("step") == "select_slot":
+        if not incoming_msg.isdigit():
+            return str(resp) if handle_invalid(temp_ref, temp_data, msg) else None
+
         index = int(incoming_msg) - 1
         slots = temp_data["slots"]
 
         if index >= len(slots):
-            msg.body("❌ Invalid choice\n9. Back")
-            return str(resp)
+            return str(resp) if handle_invalid(temp_ref, temp_data, msg) else None
 
         selected_slot = slots[index]
 
@@ -154,13 +179,13 @@ def whatsapp_reply():
             "selected_slot": selected_slot
         })
 
-        msg.body(f"Selected: {selected_slot}\n\nEnter your name:\n9. Back")
+        msg.body(f"Selected: {selected_slot}\n\nEnter your name:\nType B → Back")
         return str(resp)
 
     # =====================
-    # NAME → CONFIRM BOOKING
+    # NAME → BOOK
     # =====================
-    if temp_data and temp_data.get("step") == "ask_name":
+    if temp_data.get("step") == "ask_name":
         name = incoming_msg
         slot = temp_data["selected_slot"]
         date = temp_data["date"]
@@ -169,7 +194,7 @@ def whatsapp_reply():
         current = slot_ref.get()
 
         if current["status"] == "booked":
-            msg.body("❌ Slot already booked\n9. Back")
+            msg.body("❌ Slot already booked\nType B → Back")
             return str(resp)
 
         slot_ref.update({
@@ -188,7 +213,6 @@ def whatsapp_reply():
     # =====================
     if incoming_msg == "3":
         all_slots = db.reference("slots").get()
-
         user_bookings = []
 
         for date, slots in (all_slots or {}).items():
@@ -197,7 +221,7 @@ def whatsapp_reply():
                     user_bookings.append((date, slot))
 
         if not user_bookings:
-            msg.body("❌ No bookings found\n9. Back")
+            msg.body("❌ No bookings found\nType B → Back")
             return str(resp)
 
         temp_ref.set({
@@ -209,19 +233,23 @@ def whatsapp_reply():
         for i, (d, s) in enumerate(user_bookings, 1):
             reply += f"{i}. {s} on {d}\n"
 
-        reply += "\nReply number to cancel\n9. Back"
+        reply += "\nReply with number to cancel"
+        reply += "\nType B → Back"
+        reply += "\nType 0 → Exit"
 
         msg.body(reply)
         return str(resp)
 
     # CANCEL SELECT
-    if temp_data and temp_data.get("step") == "cancel" and incoming_msg.isdigit():
+    if temp_data.get("step") == "cancel":
+        if not incoming_msg.isdigit():
+            return str(resp) if handle_invalid(temp_ref, temp_data, msg) else None
+
         index = int(incoming_msg) - 1
         bookings = temp_data["bookings"]
 
         if index >= len(bookings):
-            msg.body("❌ Invalid choice\n9. Back")
-            return str(resp)
+            return str(resp) if handle_invalid(temp_ref, temp_data, msg) else None
 
         date, slot = bookings[index]
 
@@ -236,7 +264,7 @@ def whatsapp_reply():
         msg.body(f"❌ Cancelled {slot} on {date}")
         return str(resp)
 
-    msg.body("Send 'Hi' to start\n0. Exit")
+    msg.body("Send 'Hi' to start\nType 0 → Exit")
     return str(resp)
 
 
