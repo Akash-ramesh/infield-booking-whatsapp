@@ -1,0 +1,4 @@
+flask
+twilio
+firebase-admin
+gunicorn
