@@ -17,7 +17,7 @@ firebase_admin.initialize_app(cred, {
 })
 
 
-# Generate slots (sorted automatically by time)
+# Generate slots
 def generate_slots():
     slots = {}
     for hour in range(6, 24):
@@ -27,23 +27,38 @@ def generate_slots():
     return slots
 
 
-# Handle invalid attempts
+# Invalid handler
 def handle_invalid(temp_ref, temp_data, msg):
     attempts = temp_data.get("invalid_attempts", 0) + 1
 
     if attempts >= 3:
         temp_ref.delete()
-        msg.body("❌ Too many invalid attempts.\n\nRestarting...\nSend 'Hi' to begin.")
+        msg.body(
+            "❌ Too many invalid attempts.\n\n"
+            "Restarting...\n\n"
+            "Send 'Hi' to begin."
+        )
         return True
 
     temp_ref.update({"invalid_attempts": attempts})
     msg.body(
         f"⚠️ Invalid choice ({attempts}/3)\n"
-        "Please try again.\n\n"
+        "Try again.\n\n"
         "Type B → Back\n"
         "Type 0 → Exit"
     )
     return True
+
+
+# Main Menu helper
+def main_menu():
+    return (
+        "Main Menu:\n"
+        "1. Book for today\n"
+        "2. Book for another date\n"
+        "3. Cancel booking\n"
+        "0. Exit"
+    )
 
 
 @app.route("/whatsapp", methods=['POST'])
@@ -68,24 +83,12 @@ def whatsapp_reply():
     # BACK
     if incoming_msg.lower() == "b":
         temp_ref.delete()
-        msg.body(
-            "Main Menu:\n"
-            "1. Book for today\n"
-            "2. Book for another date\n"
-            "3. Cancel booking\n"
-            "0. Exit"
-        )
+        msg.body(main_menu())
         return str(resp)
 
     # START
     if incoming_msg.lower() in ["hi", "hello"]:
-        msg.body(
-            "Welcome to Infield Turf ⚽\n\n"
-            "1. Book for today\n"
-            "2. Book for another date\n"
-            "3. Cancel booking\n"
-            "0. Exit"
-        )
+        msg.body("Welcome to Infield Turf ⚽\n\n" + main_menu())
         return str(resp)
 
     # =====================
@@ -99,10 +102,14 @@ def whatsapp_reply():
             data = generate_slots()
             ref.set(data)
 
-        available = [s for s, i in data.items() if i["status"] == "available"]
+        available = sorted([s for s, i in data.items() if i["status"] == "available"])
 
         if not available:
-            msg.body("❌ No slots available today\nType B → Back")
+            temp_ref.delete()
+            msg.body(
+                "❌ No slots available today\n\n"
+                "Returning to main menu...\n\n" + main_menu()
+            )
             return str(resp)
 
         temp_ref.set({
@@ -140,7 +147,15 @@ def whatsapp_reply():
             data = generate_slots()
             ref.set(data)
 
-        available = [s for s, i in data.items() if i["status"] == "available"]
+        available = sorted([s for s, i in data.items() if i["status"] == "available"])
+
+        if not available:
+            temp_ref.delete()
+            msg.body(
+                "❌ No slots available\n\n"
+                "Returning to main menu...\n\n" + main_menu()
+            )
+            return str(resp)
 
         temp_ref.set({
             "step": "select_slot",
@@ -205,7 +220,11 @@ def whatsapp_reply():
 
         temp_ref.delete()
 
-        msg.body(f"✅ Booked {slot} on {date}\n\nThank you {name} 🙌")
+        msg.body(
+            f"✅ Booked {slot} on {date}\n\n"
+            f"Thank you {name} 🙌\n\n" +
+            main_menu()
+        )
         return str(resp)
 
     # =====================
@@ -221,7 +240,11 @@ def whatsapp_reply():
                     user_bookings.append((date, slot))
 
         if not user_bookings:
-            msg.body("❌ No bookings found\nType B → Back")
+            temp_ref.delete()
+            msg.body(
+                "❌ No bookings found\n\n"
+                "Returning to main menu...\n\n" + main_menu()
+            )
             return str(resp)
 
         temp_ref.set({
@@ -261,7 +284,10 @@ def whatsapp_reply():
 
         temp_ref.delete()
 
-        msg.body(f"❌ Cancelled {slot} on {date}")
+        msg.body(
+            f"❌ Cancelled {slot} on {date}\n\n"
+            "Returning to main menu...\n\n" + main_menu()
+        )
         return str(resp)
 
     msg.body("Send 'Hi' to start\nType 0 → Exit")
