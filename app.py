@@ -7,7 +7,11 @@ from datetime import datetime
 app = Flask(__name__)
 
 # ✅ Firebase setup (your values)
-cred = credentials.Certificate("infield-booking-watsapp-firebase-adminsdk-fbsvc-eb879e5496.json")
+# cred = credentials.Certificate("infield-booking-watsapp-firebase-adminsdk-fbsvc-eb879e5496.json")
+
+firebase_json = json.loads(os.environ["FIREBASE_CREDENTIALS"])
+cred = credentials.Certificate(firebase_json)
+
 
 firebase_admin.initialize_app(cred, {
     'databaseURL': 'https://infield-booking-watsapp-default-rtdb.asia-southeast1.firebasedatabase.app/'
