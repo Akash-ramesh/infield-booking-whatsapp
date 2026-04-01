@@ -35,8 +35,7 @@ def handle_invalid(temp_ref, temp_data, msg):
         temp_ref.delete()
         msg.body(
             "❌ Too many invalid attempts.\n\n"
-            "Restarting...\n\n"
-            "Send 'Hi' to begin."
+            "Restarting...\n\nSend 'Hi' to begin."
         )
         return True
 
@@ -50,7 +49,7 @@ def handle_invalid(temp_ref, temp_data, msg):
     return True
 
 
-# Main Menu helper
+# Main menu
 def main_menu():
     return (
         "Main Menu:\n"
@@ -74,69 +73,108 @@ def whatsapp_reply():
     temp_ref = db.reference(f"temp/{user_phone}")
     temp_data = temp_ref.get() or {}
 
+    # =====================
     # EXIT
+    # =====================
     if incoming_msg == "0":
         temp_ref.delete()
         msg.body("✅ Session ended. Send 'Hi' to start again.")
         return str(resp)
 
+    # =====================
     # BACK
+    # =====================
     if incoming_msg.lower() == "b":
         temp_ref.delete()
         msg.body(main_menu())
         return str(resp)
 
-    # START
-    if incoming_msg.lower() in ["hi", "hello"]:
-        msg.body("Welcome to Infield Turf ⚽\n\n" + main_menu())
-        return str(resp)
-
     # =====================
-    # OPTION 1: TODAY
+    # 🔥 STEP-BASED HANDLING FIRST (P1 FIX)
     # =====================
-    if incoming_msg == "1":
-        ref = db.reference(f"slots/{today}")
-        data = ref.get()
 
-        if not data:
-            data = generate_slots()
-            ref.set(data)
+    # SELECT SLOT
+    if temp_data.get("step") == "select_slot":
+        if not incoming_msg.isdigit():
+            return str(resp) if handle_invalid(temp_ref, temp_data, msg) else None
 
-        available = sorted([s for s, i in data.items() if i["status"] == "available"])
+        index = int(incoming_msg) - 1
+        slots = temp_data["slots"]
 
-        if not available:
-            temp_ref.delete()
-            msg.body(
-                "❌ No slots available today\n\n"
-                "Returning to main menu...\n\n" + main_menu()
-            )
-            return str(resp)
+        if index >= len(slots):
+            return str(resp) if handle_invalid(temp_ref, temp_data, msg) else None
 
-        temp_ref.set({
-            "step": "select_slot",
-            "slots": available,
-            "date": today
+        selected_slot = slots[index]
+
+        temp_ref.update({
+            "step": "ask_name",
+            "selected_slot": selected_slot
         })
 
-        reply = "Available slots:\n"
-        for i, slot in enumerate(available, 1):
-            reply += f"{i}. {slot}\n"
-
-        reply += "\nReply with slot number"
-        reply += "\nType B → Back"
-        reply += "\nType 0 → Exit"
-
-        msg.body(reply)
+        msg.body(f"Selected: {selected_slot}\n\nEnter your name:\nType B → Back")
         return str(resp)
 
-    # =====================
-    # OPTION 2: OTHER DATE
-    # =====================
-    if incoming_msg == "2":
-        temp_ref.set({"step": "enter_date"})
-        msg.body("Enter date (YYYY-MM-DD)\nType B → Back\nType 0 → Exit")
+    # ASK NAME → BOOK
+    if temp_data.get("step") == "ask_name":
+        name = incoming_msg
+        slot = temp_data["selected_slot"]
+        date = temp_data["date"]
+
+        slot_ref = db.reference(f"slots/{date}/{slot}")
+        current = slot_ref.get()
+
+        if current["status"] == "booked":
+            msg.body("❌ Slot already booked\nType B → Back")
+            return str(resp)
+
+        slot_ref.update({
+            "status": "booked",
+            "user": user_phone,
+            "name": name
+        })
+
+        temp_ref.delete()
+
+        msg.body(
+            "🎉 *Booking Confirmed!*\n\n"
+            f"• *Name:* {name}\n"
+            f"• *Phone:* {user_phone}\n"
+            f"• *Date:* {date}\n"
+            f"• *Slot:* {slot}\n\n"
+            "🙏 Thank you for choosing *Infield Turf*! ⚽\n\n"
+            "What would you like to do next?\n\n"
+            + main_menu()
+        )
         return str(resp)
 
+    # CANCEL FLOW
+    if temp_data.get("step") == "cancel":
+        if not incoming_msg.isdigit():
+            return str(resp) if handle_invalid(temp_ref, temp_data, msg) else None
+
+        index = int(incoming_msg) - 1
+        bookings = temp_data["bookings"]
+
+        if index >= len(bookings):
+            return str(resp) if handle_invalid(temp_ref, temp_data, msg) else None
+
+        date, slot = bookings[index]
+
+        db.reference(f"slots/{date}/{slot}").update({
+            "status": "available",
+            "user": "",
+            "name": ""
+        })
+
+        temp_ref.delete()
+
+        msg.body(
+            f"❌ Cancelled {slot} on {date}\n\n"
+            "Returning to main menu...\n\n" + main_menu()
+        )
+        return str(resp)
+
+    # ENTER DATE FLOW
     if temp_data.get("step") == "enter_date":
         selected_date = incoming_msg
 
@@ -167,69 +205,57 @@ def whatsapp_reply():
         for i, slot in enumerate(available, 1):
             reply += f"{i}. {slot}\n"
 
-        reply += "\nReply with slot number"
-        reply += "\nType B → Back"
-        reply += "\nType 0 → Exit"
+        reply += "\nReply with slot number\nType B → Back\nType 0 → Exit"
 
         msg.body(reply)
         return str(resp)
 
     # =====================
-    # SLOT SELECT → ASK NAME
+    # MENU (only if no active step)
     # =====================
-    if temp_data.get("step") == "select_slot":
-        if not incoming_msg.isdigit():
-            return str(resp) if handle_invalid(temp_ref, temp_data, msg) else None
 
-        index = int(incoming_msg) - 1
-        slots = temp_data["slots"]
-
-        if index >= len(slots):
-            return str(resp) if handle_invalid(temp_ref, temp_data, msg) else None
-
-        selected_slot = slots[index]
-
-        temp_ref.update({
-            "step": "ask_name",
-            "selected_slot": selected_slot
-        })
-
-        msg.body(f"Selected: {selected_slot}\n\nEnter your name:\nType B → Back")
+    if incoming_msg.lower() in ["hi", "hello"]:
+        msg.body("Welcome to Infield Turf ⚽\n\n" + main_menu())
         return str(resp)
 
-    # =====================
-    # NAME → BOOK
-    # =====================
-    if temp_data.get("step") == "ask_name":
-        name = incoming_msg
-        slot = temp_data["selected_slot"]
-        date = temp_data["date"]
+    if incoming_msg == "1":
+        ref = db.reference(f"slots/{today}")
+        data = ref.get()
 
-        slot_ref = db.reference(f"slots/{date}/{slot}")
-        current = slot_ref.get()
+        if not data:
+            data = generate_slots()
+            ref.set(data)
 
-        if current["status"] == "booked":
-            msg.body("❌ Slot already booked\nType B → Back")
+        available = sorted([s for s, i in data.items() if i["status"] == "available"])
+
+        if not available:
+            temp_ref.delete()
+            msg.body(
+                "❌ No slots available today\n\n"
+                "Returning to main menu...\n\n" + main_menu()
+            )
             return str(resp)
 
-        slot_ref.update({
-            "status": "booked",
-            "user": user_phone,
-            "name": name
+        temp_ref.set({
+            "step": "select_slot",
+            "slots": available,
+            "date": today
         })
 
-        temp_ref.delete()
+        reply = "Available slots:\n"
+        for i, slot in enumerate(available, 1):
+            reply += f"{i}. {slot}\n"
 
-        msg.body(
-            f"✅ Booked {slot} on {date}\n\n"
-            f"Thank you {name} 🙌\n\n" +
-            main_menu()
-        )
+        reply += "\nReply with slot number\nType B → Back\nType 0 → Exit"
+
+        msg.body(reply)
         return str(resp)
 
-    # =====================
-    # CANCEL BOOKING
-    # =====================
+    if incoming_msg == "2":
+        temp_ref.set({"step": "enter_date"})
+        msg.body("Enter date (YYYY-MM-DD)\nType B → Back\nType 0 → Exit")
+        return str(resp)
+
     if incoming_msg == "3":
         all_slots = db.reference("slots").get()
         user_bookings = []
@@ -256,38 +282,9 @@ def whatsapp_reply():
         for i, (d, s) in enumerate(user_bookings, 1):
             reply += f"{i}. {s} on {d}\n"
 
-        reply += "\nReply with number to cancel"
-        reply += "\nType B → Back"
-        reply += "\nType 0 → Exit"
+        reply += "\nReply with number to cancel\nType B → Back\nType 0 → Exit"
 
         msg.body(reply)
-        return str(resp)
-
-    # CANCEL SELECT
-    if temp_data.get("step") == "cancel":
-        if not incoming_msg.isdigit():
-            return str(resp) if handle_invalid(temp_ref, temp_data, msg) else None
-
-        index = int(incoming_msg) - 1
-        bookings = temp_data["bookings"]
-
-        if index >= len(bookings):
-            return str(resp) if handle_invalid(temp_ref, temp_data, msg) else None
-
-        date, slot = bookings[index]
-
-        db.reference(f"slots/{date}/{slot}").update({
-            "status": "available",
-            "user": "",
-            "name": ""
-        })
-
-        temp_ref.delete()
-
-        msg.body(
-            f"❌ Cancelled {slot} on {date}\n\n"
-            "Returning to main menu...\n\n" + main_menu()
-        )
         return str(resp)
 
     msg.body("Send 'Hi' to start\nType 0 → Exit")
