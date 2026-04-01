@@ -2,183 +2,161 @@ from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 import firebase_admin
 from firebase_admin import credentials, db
-from datetime import datetime
-import json
 import os
+import json
+from datetime import datetime
 
 app = Flask(__name__)
 
-# ✅ Firebase setup (your values)
-# cred = credentials.Certificate("infield-booking-watsapp-firebase-adminsdk-fbsvc-eb879e5496.json")
-
+# ✅ Firebase setup (using ENV variable)
 firebase_json = json.loads(os.environ["FIREBASE_CREDENTIALS"])
 cred = credentials.Certificate(firebase_json)
-
 
 firebase_admin.initialize_app(cred, {
     'databaseURL': 'https://infield-booking-watsapp-default-rtdb.asia-southeast1.firebasedatabase.app/'
 })
 
-user_states = {}
-
-# 🔥 Generate slots (6 AM → 12 AM)
+# ✅ Generate slots from 6 AM to 12 AM
 def generate_slots():
     slots = {}
-
     for hour in range(6, 24):
-        start = hour
-        end = hour + 1
-
-        def format_time(h):
-            suffix = "AM" if h < 12 else "PM"
-            h = h % 12
-            if h == 0:
-                h = 12
-            return f"{h} {suffix}"
-
-        slot_name = f"{format_time(start)} - {format_time(end)}"
-        slots[slot_name] = {"status": "available"}
-
+        start = f"{hour % 12 or 12} {'AM' if hour < 12 else 'PM'}"
+        end = f"{(hour+1) % 12 or 12} {'AM' if hour+1 < 12 else 'PM'}"
+        slots[f"{start}-{end}"] = {"status": "available"}
     return slots
-
-
-# 🔥 Create slots for date
-def create_slots_for_date(date):
-    ref = db.reference(f"slots/{date}")
-    if ref.get():
-        return
-    ref.set(generate_slots())
-
-
-# 🔥 Filter past slots (today only)
-def filter_past_slots(slots):
-    current_hour = datetime.now().hour
-    filtered = []
-
-    for slot in slots:
-        start = slot.split(" - ")[0]
-        hour = int(start.split()[0])
-        suffix = start.split()[1]
-
-        if suffix == "PM" and hour != 12:
-            hour += 12
-        if suffix == "AM" and hour == 12:
-            hour = 0
-
-        if hour > current_hour:
-            filtered.append(slot)
-
-    return filtered
 
 
 @app.route("/whatsapp", methods=['POST'])
 def whatsapp_reply():
-    incoming_msg = request.form.get('Body').strip()
-    user = request.form.get('From')
+    incoming_msg = request.form.get('Body').strip().lower()
 
     resp = MessagingResponse()
     msg = resp.message()
 
-    # ✅ STEP 1: Start
-    if incoming_msg.lower() == "hi":
-        user_states[user] = {"step": "menu"}
-        msg.body(
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # =====================
+    # STEP 1: GREETING
+    # =====================
+    if incoming_msg in ["hi", "hello"]:
+        reply = (
             "Choose option:\n"
             "1. Show today's available slots\n"
             "2. Book for another date"
         )
+        msg.body(reply)
         return str(resp)
 
-    # ✅ STEP 2: Menu
-    if user in user_states and user_states[user]["step"] == "menu":
-
-        # OPTION 1: Today
-        if incoming_msg == "1":
-            date = datetime.now().strftime("%Y-%m-%d")
-
-            create_slots_for_date(date)
-            ref = db.reference(f"slots/{date}")
-            data = ref.get()
-
-            available_slots = [s for s, v in data.items() if v["status"] == "available"]
-            available_slots = filter_past_slots(available_slots)
-
-            if not available_slots:
-                msg.body("❌ No slots available for today")
-                return str(resp)
-
-            user_states[user] = {"step": "slot", "date": date, "slots": available_slots}
-
-            reply = f"Available slots for today ({date}):\n"
-            for i, slot in enumerate(available_slots, 1):
-                reply += f"{i}. {slot}\n"
-
-            reply += "\nReply with slot number"
-            msg.body(reply)
-            return str(resp)
-
-        # OPTION 2: Another date
-        elif incoming_msg == "2":
-            user_states[user] = {"step": "enter_date"}
-            msg.body("Enter date (YYYY-MM-DD):")
-            return str(resp)
-
-        else:
-            msg.body("Please choose 1 or 2")
-            return str(resp)
-
-    # ✅ STEP 3: Custom date
-    if user in user_states and user_states[user]["step"] == "enter_date":
-        date = incoming_msg
-
-        create_slots_for_date(date)
-        ref = db.reference(f"slots/{date}")
+    # =====================
+    # STEP 2: TODAY FLOW
+    # =====================
+    if incoming_msg == "1":
+        ref = db.reference(f"slots/{today}")
         data = ref.get()
 
-        available_slots = [s for s, v in data.items() if v["status"] == "available"]
+        # Auto create slots if not exist
+        if not data:
+            data = generate_slots()
+            ref.set(data)
+
+        available_slots = [
+            slot for slot, info in data.items()
+            if info["status"] == "available"
+        ]
+
+        if not available_slots:
+            msg.body("❌ No slots available for today")
+            return str(resp)
+
+        reply = "Available slots:\n"
+        for i, slot in enumerate(available_slots, 1):
+            reply += f"{i}. {slot}\n"
+
+        reply += "\nReply with slot number to book"
+
+        # Store available slots temporarily
+        db.reference("temp/user_slots").set(available_slots)
+
+        msg.body(reply)
+        return str(resp)
+
+    # =====================
+    # STEP 3: OTHER DATE
+    # =====================
+    if incoming_msg == "2":
+        msg.body("Enter date in format YYYY-MM-DD (e.g. 2026-04-05)")
+        return str(resp)
+
+    # If user sends date
+    if "-" in incoming_msg:
+        selected_date = incoming_msg
+
+        ref = db.reference(f"slots/{selected_date}")
+        data = ref.get()
+
+        if not data:
+            data = generate_slots()
+            ref.set(data)
+
+        available_slots = [
+            slot for slot, info in data.items()
+            if info["status"] == "available"
+        ]
 
         if not available_slots:
             msg.body("❌ No slots available for this date")
             return str(resp)
 
-        user_states[user] = {"step": "slot", "date": date, "slots": available_slots}
-
-        reply = f"Available slots for {date}:\n"
+        reply = f"Available slots for {selected_date}:\n"
         for i, slot in enumerate(available_slots, 1):
             reply += f"{i}. {slot}\n"
 
-        reply += "\nReply with slot number"
+        reply += "\nReply with slot number to book"
+
+        # Save temp slots + date
+        db.reference("temp/user_slots").set(available_slots)
+        db.reference("temp/date").set(selected_date)
+
         msg.body(reply)
         return str(resp)
 
-    # ✅ STEP 4: Booking
-    if user in user_states and user_states[user]["step"] == "slot":
-        try:
-            index = int(incoming_msg) - 1
-            selected = user_states[user]["slots"][index]
-            date = user_states[user]["date"]
+    # =====================
+    # STEP 4: BOOK SLOT
+    # =====================
+    if incoming_msg.isdigit():
+        index = int(incoming_msg) - 1
 
-            slot_ref = db.reference(f"slots/{date}/{selected}")
-            current = slot_ref.get()
+        available_slots = db.reference("temp/user_slots").get()
+        selected_date = db.reference("temp/date").get() or today
 
-            if current["status"] == "booked":
-                msg.body("❌ Slot already booked. Try another.")
-                return str(resp)
+        if not available_slots or index >= len(available_slots):
+            msg.body("❌ Invalid selection")
+            return str(resp)
 
-            slot_ref.update({
-                "status": "booked",
-                "user": user
-            })
+        selected_slot = available_slots[index]
 
-            msg.body(f"✅ Slot {selected} booked on {date}")
+        slot_ref = db.reference(f"slots/{selected_date}/{selected_slot}")
 
-        except:
-            msg.body("Invalid selection")
+        # Double booking protection
+        current_data = slot_ref.get()
+        if current_data["status"] == "booked":
+            msg.body("❌ Slot already booked")
+            return str(resp)
 
+        slot_ref.update({
+            "status": "booked",
+            "user": request.form.get('From')  # store phone number
+        })
+
+        msg.body(f"✅ Slot {selected_slot} booked for {selected_date}")
         return str(resp)
 
+    # =====================
+    # DEFAULT
+    # =====================
     msg.body("Send 'Hi' to start")
     return str(resp)
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
